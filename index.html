@@ -89,7 +89,7 @@ input[type=text]{font:inherit;font-size:16px;padding:10px;border-radius:10px;bor
   </div>
   <button class="main big hide" id="snapBtn" style="width:100%;margin-top:8px;font-size:20px;padding:16px">다시 비추기</button>
   <div id="camView" class="hide">
-    <div class="ctop"><button id="camRound" class="main">1회 ▾</button><span style="flex:1"></span><button id="camClose">닫기</button></div>
+    <div class="ctop"><button id="camRound" class="main">1회 ▾</button><button id="autoShot">자동 촬영 켜짐</button><span style="flex:1"></span><button id="camClose">닫기</button></div>
     <div class="cmid" id="cmid"><div id="frame"><video id="vid" playsinline muted></video><canvas id="ovL"></canvas></div></div>
     <div id="camMsg">교재 한 쪽이 화면에 다 들어오게 비춰 주세요</div>
     <div class="cbot"><button id="shutter" disabled>채점</button></div>
@@ -309,12 +309,12 @@ function findPage(gray) {
 
 // 템플릿 사각형 -> 사진에서 잘라 낸 패치 (pw x ph)
 function warpPatch(gray, H, x0, y0, x1, y1, pw, ph) {
-  var d = new Float32Array(pw * ph);
+  var d = new Float32Array(pw * ph), c = gray.c ? new Float32Array(pw * ph) : null, cimg = gray.c ? { d: gray.c, w: gray.w, h: gray.h } : null;
   for (var j = 0; j < ph; j++) for (var i = 0; i < pw; i++) {
     var tx = x0 + (i + 0.5) / pw * (x1 - x0), ty = y0 + (j + 0.5) / ph * (y1 - y0);
-    var p = apply(H, tx, ty); d[j * pw + i] = bilinear(gray, p[0], p[1]);
+    var p = apply(H, tx, ty); d[j * pw + i] = bilinear(gray, p[0], p[1]); if (c) c[j * pw + i] = bilinear(cimg, p[0], p[1]);
   }
-  return { d: d, w: pw, h: ph };
+  return { d: d, c: c, w: pw, h: ph };
 }
 
 // ---------- 숫자 정규화 (학습 때와 같은 방식) ----------
@@ -515,6 +515,9 @@ function cellPatch(gray, H, cx0, cy0, cx1, cy1) {
   }
   var lo = Math.max(35, maxd * 0.35), hi = Math.max(lo + 15, maxd * 0.7);
   for (var k = 0; k < PW * PH; k++) { var s0 = (dv[k] - lo * 0.6) / (hi - lo * 0.6); ink[k] = s0 < 0 ? 0 : s0 > 1 ? 1 : s0; mask[k] = dv[k] > lo ? 1 : 0; }
+  // 선생님 빨간 펜·형광펜·도장처럼 색 있는 표시는 글씨로 보지 않음(연필·검정 펜만 읽음)
+  var colored = 0;
+  if (p.c) for (var kc = 0; kc < PW * PH; kc++) if (p.c[kc] > 45) { if (mask[kc]) colored++; ink[kc] = 0; mask[kc] = 0; }
   // 칸 선 지우기: 가로로 길게 이어진 선(살짝 기울어도), 칸 양옆 세로선
   var hv = new Uint8Array(PW * PH);
   for (var y3 = 0; y3 < PH; y3++) for (var x3 = 0; x3 < PW; x3++) { var k3 = y3 * PW + x3; hv[k3] = mask[k3] || (y3 > 0 && mask[k3 - PW]) || (y3 < PH - 1 && mask[k3 + PW]) ? 1 : 0; }
@@ -536,7 +539,8 @@ function cellPatch(gray, H, cx0, cy0, cx1, cy1) {
   var quad = [T2(lft, tL), T2(rgt, tR), T2(rgt, bR), T2(lft, bL)];
   var cw = rgt - lft - 2, chh = yb - ya, crop = new Uint8ClampedArray(Math.max(1, cw * chh));
   for (var yy7 = 0; yy7 < chh; yy7++) for (var xx7 = 0; xx7 < cw; xx7++) crop[yy7 * cw + xx7] = p.d[(ya + yy7) * PW + lft + 1 + xx7];
-  return { p: p, im: im, quad: quad, crop: { w: cw, h: chh, d: crop } };
+  var left = 0; for (var kk = 0; kk < mask.length; kk++) left += mask[kk];
+  return { p: p, im: im, quad: quad, crop: { w: cw, h: chh, d: crop }, colored: colored > Math.max(30, left * 0.15) };
 }
 
 function gradePage(gray, net, answers, opts) {
@@ -550,6 +554,7 @@ function gradePage(gray, net, answers, opts) {
     if (answers) {
       var dg = im.blank ? [] : splitDigits(p, im, String(answers[q]).length);
       var j = judgeCell(dg, net, answers[q]); for (var k in j) res[k] = j[k]; res.answer = answers[q];
+      if (cp.colored && res.state !== 'right') { res.state = 'unsure'; res.marked = true; } // 색 표시가 겹친 칸은 '틀림'으로 단정하지 않음
     }
     cells.push(res);
   }
@@ -582,7 +587,13 @@ function detectRound(printed, problems) {
   return { round: scores[0].r, margin: scores[0].s - scores[1].s, second: scores[1].r };
 }
 
-root.G12 = { cellPatch: cellPatch, T: T, toGray: toGray, findPage: findPage, gradePage: gradePage, makeNet: makeNet, readPrinted: readPrinted, detectRound: detectRound, apply: apply, warpPatch: warpPatch, inkMap: inkMap, splitDigits: splitDigits, normalize28: normalize28 };
+function sharpness(gray, x0, y0, x1, y1) {
+  var w = gray.w, d = gray.d, s = 0, s2 = 0, n = 0;
+  x0 = Math.max(1, Math.floor(x0)); y0 = Math.max(1, Math.floor(y0)); x1 = Math.min(w - 2, Math.ceil(x1)); y1 = Math.min(gray.h - 2, Math.ceil(y1));
+  for (var y = y0; y <= y1; y += 2) for (var x = x0; x <= x1; x += 2) { var k = y * w + x, L = 4 * d[k] - d[k - 1] - d[k + 1] - d[k - w] - d[k + w]; s += L; s2 += L * L; n++; }
+  return n ? s2 / n - (s / n) * (s / n) : 0;
+}
+root.G12 = { sharpness: sharpness, cellPatch: cellPatch, T: T, toGray: toGray, findPage: findPage, gradePage: gradePage, makeNet: makeNet, readPrinted: readPrinted, detectRound: detectRound, apply: apply, warpPatch: warpPatch, inkMap: inkMap, splitDigits: splitDigits, normalize28: normalize28 };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 <script>
@@ -601,7 +612,7 @@ var workerSrc = $('engineSrc').textContent + '\n' +
   'var pg=G12.findPage(g);if(!pg){out.found=false;postMessage(out);return;}' +
   'out.found=true;var round=m.round,auto=null;' +
   'if(m.auto){var pr=G12.readPrinted(g,net,pg.Hb);auto=G12.detectRound(pr,D.problems);if(auto.margin>6)round=auto.round;}' +
-  'out.round=round;out.auto=auto;if(m.quick){var T=G12.T,cs=[];for(var b=0;b<3;b++)for(var c=0;c<5;c++){var H=pg.Hb[b];cs.push({q:b*5+c+1,state:"live",answer:D.answers[round][b*5+c],quad:[[T.colX[c],T.ansY[b][0]],[T.colX[c+1],T.ansY[b][0]],[T.colX[c+1],T.ansY[b][1]],[T.colX[c],T.ansY[b][1]]].map(function(p){return G12.apply(H,p[0],p[1]);})});}out.cells=cs;postMessage(out);return;}' +
+  'out.round=round;out.auto=auto;if(m.quick){var T=G12.T,cs=[];for(var b=0;b<3;b++)for(var c=0;c<5;c++){var H=pg.Hb[b];cs.push({q:b*5+c+1,state:"live",answer:D.answers[round][b*5+c],quad:[[T.colX[c],T.ansY[b][0]],[T.colX[c+1],T.ansY[b][0]],[T.colX[c+1],T.ansY[b][1]],[T.colX[c],T.ansY[b][1]]].map(function(p){return G12.apply(H,p[0],p[1]);})});}out.cells=cs;var xs=[],ys=[];cs.forEach(function(k){k.quad.forEach(function(p){xs.push(p[0]);ys.push(p[1]);});});out.sharp=G12.sharpness(g,Math.min.apply(null,xs),Math.min.apply(null,ys),Math.max.apply(null,xs),Math.max.apply(null,ys));postMessage(out);return;}' +
   'var res=G12.gradePage(g,net,D.answers[round]);out.round=round;out.auto=auto;out.cells=res?res.cells:null;out.ms=Date.now()-t;postMessage(out);};';
 var worker = new Worker(URL.createObjectURL(new Blob([workerSrc], {type:'text/javascript'})));
 worker.postMessage({init:true, weights:WEIGHTS, data:DATA});
@@ -721,7 +732,7 @@ window.addEventListener('resize', fitFrame);
 function openCam(){
   state.frozen = false; state.cells = null; state.liveCells = null;
   $('camView').classList.remove('hide'); document.body.style.overflow = 'hidden';
-  $('camRound').textContent = rname(state.round) + ' ▾';
+  $('camRound').textContent = rname(state.round) + ' ▾'; AUTO.hist = []; AUTO.since = Date.now();
   $('shutter').disabled = true; camMsg('교재 한 쪽이 화면에 다 들어오게 비춰 주세요'); drawOverlay(1, 1, ovL, null); fitFrame();
 }
 function closeCam(){ $('camView').classList.add('hide'); document.body.style.overflow = ''; }
@@ -747,10 +758,27 @@ function loop(){
       state.liveCells = res.cells; if (String(res.round) !== state.round) setRound(res.round);
       $('camRound').textContent = rname(state.round) + ' ▾';
       drawOverlay(snap.width, snap.height, ovL, res.cells); $('shutter').disabled = false;
-      camMsg(rname(res.round) + ' 정답 · 아래 버튼을 누르면 채점해요');
+      autoCheck(res, snap.width);
     }, true);
   }
   requestAnimationFrame(loop);
+}
+// 자동 촬영: 화면이 또렷하고(선명도가 최근 최고치 근처) 책이 움직이지 않을 때 저절로 채점
+var AUTO = { on: true, hist: [], since: 0 };
+try { AUTO.on = localStorage.getItem('g12auto') !== '0'; } catch(e) {}
+function autoLabel(){ $('autoShot').textContent = AUTO.on ? '자동 촬영 켜짐' : '자동 촬영 꺼짐'; $('autoShot').style.opacity = AUTO.on ? 1 : 0.6; }
+$('autoShot').onclick = function(){ AUTO.on = !AUTO.on; try { localStorage.setItem('g12auto', AUTO.on ? '1' : '0'); } catch(e) {} autoLabel(); AUTO.hist = []; };
+autoLabel();
+function autoCheck(res, w){
+  var q = res.cells[0].quad, r = res.cells[14].quad, pos = [q[0][0], q[0][1], r[2][0], r[2][1]];
+  var now = Date.now(); AUTO.hist.push({ t: now, s: res.sharp, p: pos }); AUTO.hist = AUTO.hist.filter(function(h){ return now - h.t < 3000; });
+  if (!AUTO.on) { camMsg(rname(res.round) + ' 정답 · 아래 버튼을 누르면 채점해요'); return; }
+  var n = AUTO.hist.length, best = Math.max.apply(null, AUTO.hist.map(function(h){ return h.s; }));
+  var still = n >= 4 && AUTO.hist.slice(-3).every(function(h, i, arr){ if (!i) return true; var a = arr[i - 1].p; return Math.abs(h.p[0]-a[0]) + Math.abs(h.p[1]-a[1]) + Math.abs(h.p[2]-a[2]) + Math.abs(h.p[3]-a[3]) < w * 0.025; });
+  var sharpNow = res.sharp >= best * 0.85 && res.sharp > 20;
+  if (now - AUTO.since < 1200) { camMsg(rname(res.round) + ' 정답 · 그대로 들고 계세요'); return; }
+  if (still && sharpNow) { camMsg('찰칵! 채점할게요'); snapGrade(); return; }
+  camMsg(rname(res.round) + ' 정답 · ' + (!still ? '움직이지 말고 그대로…' : '초점 맞추는 중…'));
 }
 // 누르는 순간의 화면을 크게 찍어서 사진과 똑같이 채점
 function snapGrade(){
