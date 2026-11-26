@@ -22,6 +22,16 @@ button:disabled{opacity:.4}
 .round b{min-width:64px;text-align:center;font-size:18px}
 .chip{font-size:13px;padding:4px 8px;border-radius:20px;background:#efe7e1;color:var(--muted)}
 .chip.on{background:#dff2ea;color:#0f6e56}
+#camView{position:fixed;inset:0;background:#000;z-index:50;display:flex;flex-direction:column}
+#camView .ctop{display:flex;align-items:center;gap:8px;padding:calc(env(safe-area-inset-top) + 8px) 10px 8px}
+#camView .ctop button{padding:10px 14px;font-size:17px}
+#camView .cmid{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+#frame{position:relative}
+#frame video,#frame canvas{position:absolute;inset:0;width:100%;height:100%}
+#camMsg{color:#fff;text-align:center;font-size:16px;padding:6px 10px;min-height:28px}
+#camView .cbot{display:flex;align-items:center;justify-content:center;padding:6px 0 calc(env(safe-area-inset-bottom) + 14px)}
+#shutter{width:84px;height:84px;border-radius:50%;background:#fff;border:6px solid #7a5c50;box-shadow:0 0 0 4px #fff;font-size:17px;font-weight:800;color:#7a5c50;padding:0}
+#shutter:disabled{opacity:.45}
 #stage{position:relative;background:#222;border-radius:12px;overflow:hidden;margin-top:8px;touch-action:manipulation}
 #stage video,#stage canvas{display:block;width:100%;height:auto}
 #ov{position:absolute;left:0;top:0;width:100%;height:100%}
@@ -69,20 +79,25 @@ input[type=text]{font:inherit;font-size:16px;padding:10px;border-radius:10px;bor
     <input type="file" id="file" accept="image/*" multiple class="hide">
   </div>
   <div id="stage" class="hide">
-    <video id="vid" playsinline muted class="hide"></video>
     <canvas id="cv"></canvas>
     <canvas id="ov"></canvas>
     <div id="msg">교재 한 쪽이 화면에 다 들어오게 비춰 주세요</div>
   </div>
-  <button class="main big hide" id="snapBtn" style="width:100%;margin-top:8px;font-size:20px;padding:18px">이 화면으로 채점</button>
+  <button class="main big hide" id="snapBtn" style="width:100%;margin-top:8px;font-size:20px;padding:16px">다시 비추기</button>
+  <div id="camView" class="hide">
+    <div class="ctop"><button id="camRound" class="main">1회 ▾</button><span style="flex:1"></span><button id="camClose">닫기</button></div>
+    <div class="cmid" id="cmid"><div id="frame"><video id="vid" playsinline muted></video><canvas id="ovL"></canvas></div></div>
+    <div id="camMsg">교재 한 쪽이 화면에 다 들어오게 비춰 주세요</div>
+    <div class="cbot"><button id="shutter" disabled>채점</button></div>
+  </div>
   <div id="result" class="hide">
     <div class="score"><b id="scoreTxt">0 / 15</b><span id="scoreSub"></span></div>
-    <div id="tiles"></div>
     <div class="legend" style="font-size:17px;gap:16px"><span><i style="background:var(--ok);width:18px;height:18px"></i>맞음</span><span><i style="background:var(--no);width:18px;height:18px"></i>틀림</span><span><i style="background:var(--un);width:18px;height:18px"></i>확인 필요</span><span>숫자 = 정답 · 칸(또는 아래 카드)을 누르면 맞음/틀림이 바뀌어요</span></div>
     <div class="bar" style="margin-top:10px">
       <input type="text" id="name" placeholder="학생 이름 (안 써도 돼요)">
       <button class="main" id="saveBtn">저장하고 다음 장</button>
     </div>
+    <div id="tiles"></div>
     <button id="imgBtn" style="width:100%;margin-top:8px">채점된 사진을 휴대폰에 저장</button>
   </div>
   <div id="batch" class="hide"></div>
@@ -601,20 +616,21 @@ function chip(){ $('autoChip').textContent = state.auto ? '회차 자동 찾기 
 $('autoChip').onclick = function(){ state.auto = !state.auto; chip(); regrade(); };
 var grid = $('grid');
 ORDER.forEach(function(k){ var b = document.createElement('button'); b.dataset.k = k; b.textContent = k[0] === 'M' ? '모의' + k.slice(1) : k;
-  b.onclick = function(){ setRound(k); state.auto = false; chip(); grid.classList.add('hide'); regrade(); };
+  b.onclick = function(){ setRound(k); state.auto = false; chip(); grid.classList.add('hide'); if (state.live && !state.frozen) { $('snapBtn').classList.add('hide'); openCam(); } else regrade(); };
   (k[0] === 'M' ? $('gridM') : $('gridP')).appendChild(b); });
 $('rLab').onclick = function(){ grid.classList.toggle('hide'); };
-$('autoBtn').onclick = function(){ state.auto = true; chip(); grid.classList.add('hide'); regrade(); };
+$('autoBtn').onclick = function(){ state.auto = true; chip(); grid.classList.add('hide'); if (state.live && !state.frozen) { $('snapBtn').classList.add('hide'); openCam(); } else regrade(); };
 setRound(state.round);
 // ---------- 화면 그리기 ----------
 var cv = $('cv'), ov = $('ov'), vid = $('vid');
 var COL = { right: '#1d9e75', wrong: '#d64545', unsure: '#e0a020', blank: '#d64545', live: '#1f5fbf' };
-function drawOverlay(w, h){
-  ov.width = w || cv.width; ov.height = h || cv.height;
-  var c = ov.getContext('2d'); c.clearRect(0,0,ov.width,ov.height);
-  if (!state.cells) return;
-  var unit = Math.hypot(state.cells[0].quad[1][0]-state.cells[0].quad[0][0], state.cells[0].quad[1][1]-state.cells[0].quad[0][1]);
-  state.cells.forEach(function(k){
+function drawOverlay(w, h, target, cells){
+  var o = target || ov; cells = cells || state.cells;
+  o.width = w || cv.width; o.height = h || cv.height;
+  var c = o.getContext('2d'); c.clearRect(0,0,o.width,o.height);
+  if (!cells) return;
+  var unit = Math.hypot(cells[0].quad[1][0]-cells[0].quad[0][0], cells[0].quad[1][1]-cells[0].quad[0][1]);
+  cells.forEach(function(k){
     var q = k.quad, col = COL[k.final || k.state];
     var fs = Math.max(22, unit * 0.36), txt = String(k.answer);
     c.font = '800 ' + fs + 'px -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
@@ -676,55 +692,70 @@ function apply(res){
   return true;
 }
 // ---------- 실시간 카메라 ----------
-$('liveBtn').onclick = function(){ state.live ? stopLive() : startLive(); };
+$('liveBtn').onclick = function(){ if (state.live) openCam(); else startLive(); };
+var ovL = $('ovL');
 function startLive(){
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { note('이 화면에서는 실시간 카메라를 쓸 수 없어요. "사진 찍기·고르기"를 눌러 주세요.'); return; }
-  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }).then(function(s){
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1440 }, height: { ideal: 1080 }, aspectRatio: { ideal: 4 / 3 } }, audio: false }).then(function(s){
     state.stream = s; vid.srcObject = s; vid.play(); state.live = true; queue = [];
-    $('stage').classList.remove('hide'); $('liveBtn').textContent = '카메라 끄기'; $('batch').classList.add('hide');
-    unfreeze(); loop();
+    $('liveBtn').textContent = '카메라 다시 열기';
+    vid.onloadedmetadata = fitFrame; openCam(); loop();
   }).catch(function(){ note('카메라를 켤 수 없어요. 카메라 권한을 허용하거나 "사진 찍기·고르기"를 써 주세요.'); });
 }
+function fitFrame(){
+  if (!vid.videoWidth) return;
+  var box = $('cmid'), W = box.clientWidth, H = box.clientHeight, ar = vid.videoWidth / vid.videoHeight;
+  var w = W, h = W / ar; if (h > H) { h = H; w = H * ar; }
+  $('frame').style.width = Math.floor(w) + 'px'; $('frame').style.height = Math.floor(h) + 'px';
+}
+window.addEventListener('resize', fitFrame);
+function openCam(){
+  state.frozen = false; state.cells = null; state.liveCells = null;
+  $('camView').classList.remove('hide'); document.body.style.overflow = 'hidden';
+  $('camRound').textContent = rname(state.round) + ' ▾';
+  $('shutter').disabled = true; camMsg('교재 한 쪽이 화면에 다 들어오게 비춰 주세요'); drawOverlay(1, 1, ovL, null); fitFrame();
+}
+function closeCam(){ $('camView').classList.add('hide'); document.body.style.overflow = ''; }
 function stopLive(){
   state.live = false; if (state.stream) state.stream.getTracks().forEach(function(t){ t.stop(); }); state.stream = null;
-  $('liveBtn').textContent = '카메라로 비추기'; $('snapBtn').classList.add('hide');
+  closeCam(); $('liveBtn').textContent = '카메라로 비추기'; $('snapBtn').classList.add('hide');
 }
-function unfreeze(){
-  state.frozen = false; state.cells = null; state.live_ok = false;
-  vid.classList.remove('hide'); cv.classList.add('hide'); drawOverlay(1, 1); $('result').classList.add('hide'); renderTiles();
-  $('snapBtn').classList.remove('hide'); $('snapBtn').textContent = '이 화면으로 채점'; $('snapBtn').disabled = true;
-  msg('교재 한 쪽이 화면에 다 들어오게 비춰 주세요');
-}
+function camMsg(t){ $('camMsg').textContent = t; }
+$('camClose').onclick = stopLive;
+$('camRound').onclick = function(){ closeCam(); grid.classList.remove('hide'); $('snapBtn').classList.remove('hide'); $('snapBtn').textContent = '카메라로 돌아가기'; window.scrollTo(0, 0); };
 // 비추는 동안: 정답 숫자만 빠르게 띄움(손글씨는 아직 안 읽음)
 function loop(){
   if (!state.live) return;
-  if (!state.frozen && !state.busy && vid.videoWidth) {
+  var camOn = !$('camView').classList.contains('hide');
+  if (camOn && !state.busy && vid.videoWidth) {
     var s = Math.min(1, 960 / Math.max(vid.videoWidth, vid.videoHeight));
     var snap = document.createElement('canvas'); snap.width = Math.round(vid.videoWidth * s); snap.height = Math.round(vid.videoHeight * s);
     snap.getContext('2d').drawImage(vid, 0, 0, snap.width, snap.height);
     state.busy = true;
     analyze(snap, function(res){
-      state.busy = false; if (state.frozen || !state.live) return;
-      if (!res.found || !res.cells) { state.cells = null; drawOverlay(snap.width, snap.height); $('snapBtn').disabled = true; msg('갈색 띠 3줄이 다 보이게 비춰 주세요'); return; }
-      state.cells = res.cells; if (String(res.round) !== state.round) setRound(res.round);
-      drawOverlay(snap.width, snap.height); $('snapBtn').disabled = false;
-      msg(rname(res.round) + ' 정답 · 준비되면 아래 "이 화면으로 채점"');
+      state.busy = false; if (!state.live || $('camView').classList.contains('hide')) return;
+      if (!res.found || !res.cells) { state.liveCells = null; drawOverlay(snap.width, snap.height, ovL, null); $('shutter').disabled = true; camMsg('갈색 띠 3줄이 다 보이게 비춰 주세요'); return; }
+      state.liveCells = res.cells; if (String(res.round) !== state.round) setRound(res.round);
+      $('camRound').textContent = rname(state.round) + ' ▾';
+      drawOverlay(snap.width, snap.height, ovL, res.cells); $('shutter').disabled = false;
+      camMsg(rname(res.round) + ' 정답 · 아래 버튼을 누르면 채점해요');
     }, true);
   }
   requestAnimationFrame(loop);
 }
 // 누르는 순간의 화면을 크게 찍어서 사진과 똑같이 채점
 function snapGrade(){
-  if (state.frozen) { unfreeze(); return; }
   if (!vid.videoWidth) return;
   var s = Math.min(1, 2000 / Math.max(vid.videoWidth, vid.videoHeight));
   cv.width = Math.round(vid.videoWidth * s); cv.height = Math.round(vid.videoHeight * s);
   cv.getContext('2d').drawImage(vid, 0, 0, cv.width, cv.height);
-  state.frozen = true; vid.classList.add('hide'); cv.classList.remove('hide'); state.cells = null; drawOverlay();
-  $('snapBtn').textContent = '다시 비추기'; msg('채점 중…');
   if (navigator.vibrate) navigator.vibrate(40);
+  closeCam(); state.frozen = true; state.cells = null; drawOverlay();
+  $('stage').classList.remove('hide'); cv.classList.remove('hide');
+  $('snapBtn').classList.remove('hide'); $('snapBtn').textContent = '다시 비추기';
+  msg('채점 중…'); window.scrollTo(0, $('stage').offsetTop - 8);
   analyze(cv, function(res){
-    if (!apply(res)) { msg('이 화면에서는 띠 3줄을 못 찾았어요. "다시 비추기"를 눌러 주세요.'); return; }
+    if (!apply(res)) { msg('띠 3줄을 못 찾았어요. "다시 비추기"를 눌러 주세요.'); return; }
     msg(''); drawOverlay(); showScore();
   });
 }
@@ -742,7 +773,7 @@ function nextPhoto(){
     var s = Math.min(1, 2000 / Math.max(img.width, img.height));
     cv.width = Math.round(img.width * s); cv.height = Math.round(img.height * s);
     cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); URL.revokeObjectURL(img.src);
-    $('stage').classList.remove('hide'); vid.classList.add('hide'); cv.classList.remove('hide'); state.frozen = true; state.cells = null; drawOverlay();
+    $('stage').classList.remove('hide'); cv.classList.remove('hide'); state.frozen = true; state.cells = null; drawOverlay();
     msg('채점 중…'); state.photo = cv.toDataURL('image/jpeg', 0.6);
     analyze(cv, function(res){
       if (!apply(res)) { msg('갈색 띠 3줄을 못 찾았어요. 책을 펴고 다시 찍어 주세요.'); showScore(); return; }
@@ -764,7 +795,7 @@ $('saveBtn').onclick = function(){
   state.cells = null; drawOverlay(); $('result').classList.add('hide');
   if (!state.auto) { var ni = ORDER.indexOf(state.round) + 1; if (ni < ORDER.length) setRound(ORDER[ni]); }
   if (queue.length) nextPhoto();
-  else if (state.live) { unfreeze(); msg('다음 쪽을 비춰 주세요'); }
+  else if (state.live) { $('stage').classList.add('hide'); $('snapBtn').classList.add('hide'); openCam(); camMsg('다음 쪽을 비춰 주세요'); }
   else { $('stage').classList.add('hide'); }
 };
 function renderLog(){
@@ -772,7 +803,8 @@ function renderLog(){
   $('log').innerHTML = LOG.slice(0, 200).map(function(r){ return '<tr><td>' + esc(r.name || '-') + '</td><td>' + r.round + '회</td><td>' + r.score + '/15</td><td>' + (r.wrong || '-') + '</td><td>' + r.time + '</td></tr>'; }).join('');
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
-$('snapBtn').onclick = snapGrade;
+$('shutter').onclick = snapGrade;
+$('snapBtn').onclick = function(){ grid.classList.add('hide'); $('stage').classList.add('hide'); $('result').classList.add('hide'); $('snapBtn').classList.add('hide'); state.cells = null; if (state.live) openCam(); else startLive(); };
 $('imgBtn').onclick = function(){
   var o = document.createElement('canvas'); o.width = cv.width; o.height = cv.height; var x = o.getContext('2d');
   x.drawImage(cv, 0, 0); x.drawImage(ov, 0, 0);
