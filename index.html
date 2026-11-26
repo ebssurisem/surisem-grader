@@ -154,21 +154,21 @@ var T = {
 
 // ---------- 기본 도구 ----------
 function toGray(rgba, w, h) {
-  var g = new Float32Array(w * h), c = new Float32Array(w * h);
-  for (var i = 0, j = 0; i < g.length; i++, j += 4) { g[i] = 0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2]; c[i] = rgba[j] - rgba[j + 2]; }
-  return { d: g, c: c, w: w, h: h };
+  var g = new Float32Array(w * h), c = new Float32Array(w * h), c2 = new Float32Array(w * h);
+  for (var i = 0, j = 0; i < g.length; i++, j += 4) { g[i] = 0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2]; c[i] = rgba[j] - rgba[j + 2]; c2[i] = (rgba[j] + rgba[j + 2]) / 2 - rgba[j + 1]; }
+  return { d: g, c: c, c2: c2, w: w, h: h };
 }
 function downscale(img, maxW) {
   var s = Math.min(1, maxW / img.w); if (s === 1) return { img: img, s: 1 };
-  var w = Math.round(img.w * s), h = Math.round(img.h * s), d = new Float32Array(w * h), cc = img.c ? new Float32Array(w * h) : null;
+  var w = Math.round(img.w * s), h = Math.round(img.h * s), d = new Float32Array(w * h), cc = img.c ? new Float32Array(w * h) : null, cc2 = img.c2 ? new Float32Array(w * h) : null;
   var f = img.w / w;
   for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
     var sx0 = Math.floor(x * f), sy0 = Math.floor(y * f), sx1 = Math.max(sx0 + 1, Math.floor((x + 1) * f)), sy1 = Math.max(sy0 + 1, Math.floor((y + 1) * f));
-    var sum = 0, sc = 0, n = 0;
-    for (var yy = sy0; yy < sy1 && yy < img.h; yy++) for (var xx = sx0; xx < sx1 && xx < img.w; xx++) { sum += img.d[yy * img.w + xx]; if (cc) sc += img.c[yy * img.w + xx]; n++; }
-    d[y * w + x] = n ? sum / n : 255; if (cc) cc[y * w + x] = n ? sc / n : 0;
+    var sum = 0, sc = 0, sc2 = 0, n = 0;
+    for (var yy = sy0; yy < sy1 && yy < img.h; yy++) for (var xx = sx0; xx < sx1 && xx < img.w; xx++) { var kk = yy * img.w + xx; sum += img.d[kk]; if (cc) sc += img.c[kk]; if (cc2) sc2 += img.c2[kk]; n++; }
+    d[y * w + x] = n ? sum / n : 255; if (cc) cc[y * w + x] = n ? sc / n : 0; if (cc2) cc2[y * w + x] = n ? sc2 / n : 0;
   }
-  return { img: { d: d, c: cc, w: w, h: h }, s: w / img.w };
+  return { img: { d: d, c: cc, c2: cc2, w: w, h: h }, s: w / img.w };
 }
 function percentile(arr, p) {
   var hist = new Uint32Array(256), n = arr.length;
@@ -261,7 +261,13 @@ function findPage(gray) {
     var mean = (I[e * (w + 1) + b] - I[c * (w + 1) + b] - I[e * (w + 1) + a] + I[c * (w + 1) + a]) / ((b - a) * (e - c));
     var k = y2 * w + x2, v = g.d[k], chroma = g.c ? g.c[k] : 30;
     var ac = chroma < 0 ? -chroma : chroma; // 띠 색이 갈색·청록·보라·하늘·검정 어느 것이든: 색이 있거나 아주 진하면 띠 후보
-    mask[k] = (v < mean * 0.72 && v < bg * 0.7 && ((ac > 12 && ac < 200) || v < bg * 0.5)) ? 1 : 0;
+    if (T.barRGB) { // 띠 색을 알고 있으면 그 색에 가까운 곳만 띠로 봄(밝기는 조명에 따라 바뀌므로 비율로 비교)
+      var br = T.barRGB, bl = 255 * (0.299 * br[0] + 0.587 * br[1] + 0.114 * br[2]), f = v / Math.max(1, bl);
+      var cb = 255 * (br[0] - br[2]) * f, c2b = 255 * ((br[0] + br[2]) / 2 - br[1]) * f, c2v = g.c2 ? g.c2[k] : 0;
+      var near = Math.abs(chroma - cb) < Math.abs(cb) * 0.5 + 10 && Math.abs(c2v - c2b) < Math.abs(c2b) * 0.5 + 10;
+      var strong = Math.abs(cb) + Math.abs(c2b) > 20;
+      mask[k] = (near && strong && v < bg * (bl / 255 + 0.12) && v > bg * (bl / 255 - 0.35) && v < mean * 0.97) ? 1 : 0;
+    } else mask[k] = (v < mean * 0.72 && v < bg * 0.7 && ((ac > 12 && ac < 256) || v < bg * 0.5)) ? 1 : 0;
   }
   // 가는 선·숫자 지우기(세로 열림) 후 띠 안의 흰 숫자 메우기(가로 닫힘)
   mask = boxMorph(boxMorph(mask, w, h, 0, 2, false), w, h, 0, 2, true);
@@ -610,9 +616,10 @@ function gradePage(gray, net, answers, opts) {
   opts = opts || {};
   var pg = findPage(gray); if (!pg) return null;
   var cells = [];
-  for (var b = 0; b < 3; b++) for (var c = 0; c < 5; c++) {
+  var qi = 0;
+  for (var b = 0; b < 3; b++) for (var c = 0; c < ncol(b); c++) {
     var cx0 = T.colX[c], cx1 = T.colX[c + 1], cy0 = T.ansY[b][0], cy1 = T.ansY[b][1];
-    var Hb = pg.Hb ? pg.Hb[b] : pg.H, cp = cellPatch(gray, Hb, cx0, cy0, cx1, cy1), p = cp.p, im = cp.im, q = b * 5 + c;
+    var Hb = pg.Hb ? pg.Hb[b] : pg.H, cp = cellPatch(gray, Hb, cx0, cy0, cx1, cy1), p = cp.p, im = cp.im, q = qi++;
     var res = { q: q + 1, crop: cp.crop, quad: [[cx0, cy0], [cx1, cy0], [cx1, cy1], [cx0, cy1]].map(function (t) { return apply(Hb, t[0], t[1]); }) };
     if (answers) {
       var dg = im.blank ? [] : splitDigits(p, im, String(Math.abs(answers[q])).length);
@@ -626,7 +633,7 @@ function gradePage(gray, net, answers, opts) {
 // 인쇄된 문제 숫자로 회차 찾기
 function readPrinted(gray, net, H0) {
   var R = T.rows || 4, out = [], rowH = (T.digBot - T.digTop) / R;
-  for (var b = 0; b < 3; b++) for (var c = 0; c < 5; c++) {
+  for (var b = 0; b < 3; b++) for (var c = 0; c < ncol(b); c++) {
     var col = [], H = H0.length ? H0[b] : H0;
     for (var r = 0; r < R; r++) {
       // 숫자는 오른쪽 정렬 → 일의 자리(맨 오른쪽 숫자)만 읽어서 회차를 맞춤
@@ -658,8 +665,9 @@ function sharpness(gray, x0, y0, x1, y1) {
   for (var y = y0; y <= y1; y += 2) for (var x = x0; x <= x1; x += 2) { var k = y * w + x, L = 4 * d[k] - d[k - 1] - d[k + 1] - d[k - w] - d[k + w]; s += L; s2 += L * L; n++; }
   return n ? s2 / n - (s / n) * (s / n) : 0;
 }
-function setT(t) { for (var k in t) T[k] = t[k]; }
-root.G12 = { setT: setT, sharpness: sharpness, cellPatch: cellPatch, T: T, toGray: toGray, findPage: findPage, gradePage: gradePage, makeNet: makeNet, readPrinted: readPrinted, detectRound: detectRound, apply: apply, warpPatch: warpPatch, inkMap: inkMap, splitDigits: splitDigits, normalize28: normalize28 };
+function setT(t) { delete T.ncols; delete T.light; for (var k in t) T[k] = t[k]; }
+function ncol(b) { return T.ncols ? T.ncols[b] : 5; }
+root.G12 = { ncol: ncol, setT: setT, sharpness: sharpness, cellPatch: cellPatch, T: T, toGray: toGray, findPage: findPage, gradePage: gradePage, makeNet: makeNet, readPrinted: readPrinted, detectRound: detectRound, apply: apply, warpPatch: warpPatch, inkMap: inkMap, splitDigits: splitDigits, normalize28: normalize28 };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
 <script>
