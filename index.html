@@ -77,6 +77,10 @@ input[type=text]{font:inherit;font-size:16px;padding:10px;border-radius:10px;bor
     <button class="main big" id="liveBtn">카메라로 비추기</button>
     <button class="big" id="photoBtn">사진 찍기 · 고르기</button>
     <input type="file" id="file" accept="image/*" multiple class="hide">
+    <input type="file" id="fileB" accept="image/*" multiple class="hide">
+  </div>
+  <div class="bar">
+    <button class="big" id="batchBtn">여러 장 한꺼번에 채점 → 결과 사진으로 받기</button>
   </div>
   <div id="stage" class="hide">
     <canvas id="cv"></canvas>
@@ -100,7 +104,12 @@ input[type=text]{font:inherit;font-size:16px;padding:10px;border-radius:10px;bor
     <div id="tiles"></div>
     <button id="imgBtn" style="width:100%;margin-top:8px">채점된 사진을 휴대폰에 저장</button>
   </div>
-  <div id="batch" class="hide"></div>
+  <div id="batch" class="hide" style="background:#fff;border-radius:12px;padding:12px;margin-top:10px;box-shadow:0 0 0 1px #d9cfc8 inset">
+    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><b id="bTitle" style="font-size:20px">한꺼번에 채점</b><span id="bProg" class="chip"></span></div>
+    <div class="bar"><button class="main" id="bShare">결과 사진 모두 저장</button><button id="bLog">채점 기록에 모두 넣기</button></div>
+    <div id="bList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:8px"></div>
+    <p class="help" id="bHelp">노란 칸(확인 필요)은 결과 사진에 노란색으로 표시되고, 아래에 학생 글씨가 크게 붙어 있어요. 사진을 보고 직접 판단해 주세요.</p>
+  </div>
   <h3 style="font-size:16px;margin:18px 2px 4px">채점 기록 <span class="chip" id="cnt">0장</span></h3>
   <div class="bar"><button id="copyBtn">기록 복사</button><button id="csvBtn">엑셀(CSV)로 받기</button><button id="clrBtn">기록 지우기</button></div>
   <table><thead><tr><th>이름</th><th>회차</th><th>점수</th><th>틀린 번호</th><th>시각</th></tr></thead><tbody id="log"></tbody></table>
@@ -782,6 +791,84 @@ function nextPhoto(){
   };
   img.src = URL.createObjectURL(f);
 }
+
+// ---------- 여러 장 한꺼번에 채점 → 결과 사진 ----------
+var BR = [];
+$('batchBtn').onclick = function(){ $('fileB').value = ''; $('fileB').click(); };
+$('fileB').onchange = function(){
+  var files = Array.prototype.slice.call(this.files); if (!files.length) return;
+  if (state.live) stopLive();
+  BR = []; $('bList').innerHTML = ''; $('batch').classList.remove('hide'); $('stage').classList.add('hide'); $('result').classList.add('hide');
+  var i = 0, total = files.length;
+  $('bShare').disabled = true; $('bLog').disabled = true;
+  (function next(){
+    if (i >= total) { $('bProg').textContent = total + '장 끝'; $('bShare').disabled = false; $('bLog').disabled = false; return; }
+    var f = files[i++]; $('bProg').textContent = i + ' / ' + total + ' 채점 중…';
+    var img = new Image();
+    img.onload = function(){
+      var s = Math.min(1, 2000 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+      c.width = Math.round(img.width * s); c.height = Math.round(img.height * s); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(img.src);
+      var keep = document.createElement('canvas'); keep.width = c.width; keep.height = c.height; keep.getContext('2d').drawImage(c, 0, 0);
+      analyze(c, function(res){ addBatch(f.name, keep, res); next(); });
+    };
+    img.onerror = function(){ addBatch(f.name, null, { found: false }); next(); };
+    img.src = URL.createObjectURL(f);
+  })();
+};
+function composeResult(photo, res){
+  var cells = res.cells, ok = 0, un = [], wr = [];
+  cells.forEach(function(k){ if (k.state === 'right') ok++; else if (k.state === 'unsure') un.push(k); else wr.push(k); });
+  var W = photo.width, head = Math.round(W * 0.11), bad = wr.concat(un).sort(function(a, b){ return a.q - b.q; });
+  var cols = 3, tw = Math.floor((W - 40) / cols), th = Math.round(tw * 0.62), rows = Math.ceil(bad.length / cols), strip = bad.length ? rows * (th + 16) + 30 : 0;
+  var o = document.createElement('canvas'); o.width = W; o.height = head + photo.height + strip; var x = o.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, o.width, o.height);
+  x.fillStyle = '#7a5c50'; x.fillRect(0, 0, W, head);
+  x.fillStyle = '#fff'; x.textBaseline = 'middle'; x.font = '800 ' + Math.round(head * 0.5) + 'px -apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif';
+  x.fillText(rname(res.round) + '  ' + ok + ' / 15', head * 0.25, head / 2);
+  x.font = '600 ' + Math.round(head * 0.26) + 'px -apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif'; x.textAlign = 'right';
+  x.fillText((wr.length ? '틀림 ' + wr.map(function(k){ return k.q; }).join(',') + '번' : '틀림 없음') + (un.length ? '  · 확인 ' + un.map(function(k){ return k.q; }).join(',') + '번' : ''), W - head * 0.25, head / 2); x.textAlign = 'left';
+  x.drawImage(photo, 0, head);
+  var tmp = document.createElement('canvas'); drawOverlay(photo.width, photo.height, tmp, cells); x.drawImage(tmp, 0, head);
+  bad.forEach(function(k, n){
+    var cx = 20 + (n % cols) * tw, cy = head + photo.height + 20 + Math.floor(n / cols) * (th + 16), col = COL[k.state];
+    x.fillStyle = k.state === 'unsure' ? '#fdf3dc' : '#fbeaea'; x.fillRect(cx, cy, tw - 10, th); x.lineWidth = 5; x.strokeStyle = col; x.strokeRect(cx, cy, tw - 10, th);
+    if (k.crop && k.crop.w > 1) { var cc = document.createElement('canvas'); cc.width = k.crop.w; cc.height = k.crop.h; var id = cc.getContext('2d').createImageData(k.crop.w, k.crop.h);
+      for (var i2 = 0; i2 < k.crop.d.length; i2++) { var v = k.crop.d[i2]; id.data[i2*4] = id.data[i2*4+1] = id.data[i2*4+2] = v; id.data[i2*4+3] = 255; } cc.getContext('2d').putImageData(id, 0, 0);
+      var ih = th * 0.55, iw = Math.min(tw - 30, ih * cc.width / cc.height); x.drawImage(cc, cx + 10, cy + 10, iw, ih); }
+    var lab = k.q + '번  정답 ' + k.answer, fz = Math.round(th * 0.28); x.font = '800 ' + fz + 'px sans-serif';
+    var lw = x.measureText(lab).width; if (lw > tw - 34) { fz = Math.floor(fz * (tw - 34) / lw); x.font = '800 ' + fz + 'px sans-serif'; }
+    x.fillStyle = col; x.textBaseline = 'alphabetic'; x.fillText(lab, cx + 12, cy + th - 14); x.textBaseline = 'middle';
+  });
+  return { canvas: o, ok: ok, un: un.length, wr: wr.map(function(k){ return k.q; }) };
+}
+function addBatch(name, photo, res){
+  var card = document.createElement('div'); card.style.cssText = 'border-radius:10px;overflow:hidden;box-shadow:0 0 0 1px #d9cfc8 inset;background:#faf7f4';
+  if (!photo || !res.found || !res.cells) {
+    card.innerHTML = '<div style="padding:12px;color:#d64545;font-weight:700">못 읽음</div><div style="padding:0 12px 12px;font-size:13px;color:#7d706a">' + esc(name) + '<br>띠 3줄이 다 보이게 다시 찍어 주세요</div>';
+    $('bList').appendChild(card); BR.push({ name: name, fail: true }); return;
+  }
+  var r = composeResult(photo, res);
+  r.canvas.toBlob(function(blob){
+    var url = URL.createObjectURL(blob), fn = '채점_' + rname(res.round) + '_' + r.ok + '점_' + (BR.length + 1) + '.jpg';
+    var item = { name: name, round: res.round, ok: r.ok, un: r.un, wr: r.wr, blob: blob, file: fn, url: url }; BR.push(item);
+    var col = r.un ? '#c98a10' : r.wr.length ? '#d64545' : '#1d9e75';
+    card.innerHTML = '<img src="' + url + '" style="width:100%;display:block"><div style="padding:8px 10px"><b style="font-size:18px;color:' + col + '">' + rname(res.round) + ' ' + r.ok + '/15</b>' + (r.un ? '<div style="font-size:13px;color:#c98a10">확인 필요 ' + r.un + '칸</div>' : '') + '</div>';
+    card.onclick = function(){ window.open(url, '_blank'); };
+    $('bList').appendChild(card);
+  }, 'image/jpeg', 0.88);
+}
+$('bShare').onclick = function(){
+  var items = BR.filter(function(b){ return b.blob; }); if (!items.length) return;
+  var files = items.map(function(b){ return new File([b.blob], b.file, { type: 'image/jpeg' }); });
+  if (navigator.canShare && navigator.canShare({ files: files })) { navigator.share({ files: files }).catch(function(){}); return; }
+  items.forEach(function(b, n){ setTimeout(function(){ var a3 = document.createElement('a'); a3.href = b.url; a3.download = b.file; document.body.appendChild(a3); a3.click(); a3.remove(); }, n * 400); });
+};
+$('bLog').onclick = function(){
+  var d = new Date(), t = d.toLocaleDateString('ko-KR') + ' ' + d.toTimeString().slice(0,5), n = 0;
+  BR.forEach(function(b){ if (!b.blob) return; LOG.unshift({ name: '', round: b.round, score: b.ok, wrong: b.wr.join(' ') + (b.un ? ' (확인 ' + b.un + '칸)' : ''), time: t }); n++; });
+  try { localStorage.setItem('g12log', JSON.stringify(LOG.slice(0, 2000))); } catch(e) {}
+  renderLog(); $('bLog').disabled = true; note(n + '장을 채점 기록에 넣었어요.');
+};
 function regrade(){ if (!state.frozen || !state.cells) return; msg('다시 채점 중…'); analyze(cv, function(res){ if (apply(res)) { msg(''); drawOverlay(); showScore(); } }); }
 // ---------- 저장 / 기록 ----------
 $('saveBtn').onclick = function(){
@@ -826,7 +913,7 @@ $('copyBtn').onclick = function(){
   try { navigator.clipboard.writeText(t).then(done, function(){ note('복사가 막혀 있어요.'); }); } catch(e) { note('복사가 막혀 있어요.'); }
 };
 function note(t){ var n = $('note'); n.textContent = t; n.classList.remove('hide'); clearTimeout(note.t); note.t = setTimeout(function(){ n.classList.add('hide'); }, 4000); }
-if (window.G12_ARTIFACT) { $('liveBtn').classList.add('hide'); $('csvBtn').classList.add('hide'); $('imgBtn').classList.add('hide'); $('photoBtn').textContent = '사진 찍기 · 고르기'; $('photoBtn').classList.add('main'); }
+if (window.G12_ARTIFACT) { $('bShare').textContent = '결과 사진 크게 보기(길게 눌러 저장)'; $('bShare').onclick = function(){ var f = BR.filter(function(b){ return b.url; })[0]; if (f) window.open(f.url, '_blank'); }; $('liveBtn').classList.add('hide'); $('csvBtn').classList.add('hide'); $('imgBtn').classList.add('hide'); $('photoBtn').textContent = '사진 찍기 · 고르기'; $('photoBtn').classList.add('main'); }
 renderLog(); chip();
 })();
 </script>
