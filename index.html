@@ -32,6 +32,13 @@ button:disabled{opacity:.4}
 #camView .cbot{display:flex;align-items:center;justify-content:center;padding:6px 0 calc(env(safe-area-inset-bottom) + 14px)}
 #shutter{width:84px;height:84px;border-radius:50%;background:#fff;border:6px solid #7a5c50;box-shadow:0 0 0 4px #fff;font-size:17px;font-weight:800;color:#7a5c50;padding:0}
 #shutter:disabled{opacity:.45}
+#viewer{position:fixed;inset:0;background:#111;z-index:60;display:flex;flex-direction:column}
+#viewer .vtop{display:flex;align-items:center;gap:8px;padding:calc(env(safe-area-inset-top) + 8px) 10px 8px;color:#fff;font-size:17px}
+#viewer .vtop b{flex:1}
+#vbox{flex:1;position:relative;overflow:hidden;touch-action:none}
+#vimg{position:absolute;left:0;top:0;transform-origin:0 0;user-select:none;-webkit-user-drag:none;max-width:none}
+#viewer .vbot{display:flex;gap:10px;padding:8px 10px calc(env(safe-area-inset-bottom) + 10px)}
+#viewer .vbot button{flex:1;font-size:18px;padding:14px}
 #stage{position:relative;background:#222;border-radius:12px;overflow:hidden;margin-top:8px;touch-action:manipulation}
 #stage video,#stage canvas{display:block;width:100%;height:auto}
 #ov{position:absolute;left:0;top:0;width:100%;height:100%}
@@ -88,6 +95,11 @@ input[type=text]{font:inherit;font-size:16px;padding:10px;border-radius:10px;bor
     <div id="msg">교재 한 쪽이 화면에 다 들어오게 비춰 주세요</div>
   </div>
   <button class="main big hide" id="snapBtn" style="width:100%;margin-top:8px;font-size:20px;padding:16px">다시 비추기</button>
+  <div id="viewer" class="hide">
+    <div class="vtop"><b id="vTitle"></b><button id="vClose" class="main" style="font-size:18px;padding:10px 18px">닫기</button></div>
+    <div id="vbox"><img id="vimg" alt="채점 결과 사진"></div>
+    <div class="vbot"><button id="vPrev">◀ 이전</button><button id="vNext">다음 ▶</button></div>
+  </div>
   <div id="camView" class="hide">
     <div class="ctop"><button id="camRound" class="main">1회 ▾</button><button id="autoShot">자동 촬영 켜짐</button><span style="flex:1"></span><button id="multiDone" class="main hide">다 찍었어요 (0)</button><button id="camClose">닫기</button></div>
     <div class="cmid" id="cmid"><div id="frame"><video id="vid" playsinline muted></video><canvas id="ovL"></canvas></div></div>
@@ -116,7 +128,7 @@ input[type=text]{font:inherit;font-size:16px;padding:10px;border-radius:10px;bor
     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:6px"><b id="bTitle" style="font-size:20px">한꺼번에 채점</b><span id="bProg" class="chip"></span></div>
     <div class="bar"><button class="main" id="bShare">결과 사진 모두 저장</button><button id="bLog">채점 기록에 모두 넣기</button></div>
     <div id="bList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:8px"></div>
-    <p class="help" id="bHelp">노란 칸(확인 필요)은 결과 사진에 노란색으로 표시되고, 아래에 학생 글씨가 크게 붙어 있어요. 사진을 보고 직접 판단해 주세요.</p>
+    <p class="help" id="bHelp">결과 사진을 누르면 크게 볼 수 있어요. 두 손가락으로 늘리고, 두 번 톡 치면 확대, 옆으로 밀면 다음 사진이에요.<br>노란 칸(확인 필요)은 결과 사진에 노란색으로 표시되고, 아래에 학생 글씨가 크게 붙어 있어요. 사진을 보고 직접 판단해 주세요.</p>
     </div>
   </div>
   <h3 style="font-size:16px;margin:18px 2px 4px">채점 기록 <span class="chip" id="cnt">0장</span></h3>
@@ -466,6 +478,17 @@ function splitDigits(p, im, expect) {
 }
 
 // ---------- 한 칸 채점 ----------
+function variant(kind) {
+  return function (x) {
+    var o = new Float32Array(784);
+    if (kind === 1 || kind === -1) { for (var y = 0; y < 28; y++) for (var xx = 0; xx < 28; xx++) { var m = kind === 1 ? 0 : 1;
+      for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++) { var yy = y + dy, x2 = xx + dx, v = (yy < 0 || yy > 27 || x2 < 0 || x2 > 27) ? 0 : x[yy * 28 + x2]; if (kind === 1 ? v > m : v < m) m = v; }
+      o[y * 28 + xx] = kind === 1 ? (x[y * 28 + xx] + m) / 2 : (x[y * 28 + xx] + m) / 2; } return o; }
+    var sh = { s1: [1, 0], s2: [-1, 0], s3: [0, 1], s4: [0, -1] }[kind];
+    for (var y2 = 0; y2 < 28; y2++) for (var x3 = 0; x3 < 28; x3++) { var sy = y2 - sh[1], sx = x3 - sh[0]; o[y2 * 28 + x3] = (sy < 0 || sy > 27 || sx < 0 || sx > 27) ? 0 : x[sy * 28 + sx]; }
+    return o;
+  };
+}
 function judgeCell(digits, net, correct) {
   var cs = String(correct);
   if (!digits.length) return { state: 'blank', read: '' };
@@ -487,7 +510,18 @@ function judgeCell(digits, net, correct) {
     }
   });
   if (pcBest > 0.5 && pcMin > 0.6) return { state: 'right', read: cs, conf: pcBest };
-  if (bestRead !== cs && bestConf > 0.8 && pcBest < 0.05 && (!bestForced || (bestConf > 0.97 && pcBest < 0.002))) return { state: 'wrong', read: bestRead, conf: bestConf };
+  if (bestRead !== cs && bestConf > 0.8 && pcBest < 0.05 && (!bestForced || (bestConf > 0.97 && pcBest < 0.002))) {
+    // '틀림'으로 정하기 전에 글씨를 조금 굵게·가늘게·옮겨서 다시 읽어 봄 → 한 번이라도 정답으로 읽히면 '확인 필요'
+    if (digits.length === cs.length) {
+      var alt = 0;
+      [variant(1), variant(-1), variant('s1'), variant('s2'), variant('s3'), variant('s4')].forEach(function (fn) {
+        var pr = digits.map(function (d) { return net(fn(d.x28)); }), pcv = pr.reduce(function (a, p, i) { return a * p[+cs[i]]; }, 1);
+        if (pcv > alt) alt = pcv;
+      });
+      if (alt > 0.15) return { state: 'unsure', read: bestRead, conf: alt };
+    }
+    return { state: 'wrong', read: bestRead, conf: bestConf };
+  }
   return { state: 'unsure', read: bestRead, conf: pcBest };
 }
 
@@ -526,24 +560,28 @@ function cellPatch(gray, H, cx0, cy0, cx1, cy1) {
   for (var k = 0; k < PW * PH; k++) { var s0 = (dv[k] - lo * 0.6) / (hi - lo * 0.6); ink[k] = s0 < 0 ? 0 : s0 > 1 ? 1 : s0; mask[k] = dv[k] > lo ? 1 : 0; }
   // 선생님 빨간 펜·형광펜·도장처럼 색 있는 표시는 글씨로 보지 않음(연필·검정 펜만 읽음)
   var colored = 0;
-  if (p.c) for (var kc = 0; kc < PW * PH; kc++) if (p.c[kc] > 45) { if (mask[kc]) colored++; ink[kc] = 0; mask[kc] = 0; }
+  if (p.c) { // 종이 색(조명 때문에 누렇게 보일 수 있음)보다 확실히 더 붉은 것만 색 표시로 봄
+    var cs2 = Array.prototype.slice.call(p.c).sort(function (u, v) { return u - v; }), cbg = cs2[cs2.length >> 1];
+    for (var kc = 0; kc < PW * PH; kc++) if (p.c[kc] - cbg > 50) { if (mask[kc]) colored++; ink[kc] = 0; mask[kc] = 0; } }
+  // 실제로 찾은 칸 선으로 화면에 그릴 네모(양 끝 높이를 따로 재서 기울기·휨 반영)
+  var seg = Math.round((rgt - lft) * 0.3);
+  function near(y0, xa2, xb2) { var b2 = y0, bv2 = -1; for (var y = Math.max(0, y0 - 5); y <= Math.min(PH - 1, y0 + 5); y++) { var v = rowF(y, xa2, xb2); if (v > bv2) { bv2 = v; b2 = y; } } return bv2 > 0.3 ? b2 : y0; }
+  var tL = near(top, lft + 3, lft + seg), tR = near(top, rgt - seg, rgt - 3), bL = near(bot, lft + 3, lft + seg), bR = near(bot, rgt - seg, rgt - 3);
   // 칸 선 지우기: 가로로 길게 이어진 선(살짝 기울어도), 칸 양옆 세로선
   var hv = new Uint8Array(PW * PH);
   for (var y3 = 0; y3 < PH; y3++) for (var x3 = 0; x3 < PW; x3++) { var k3 = y3 * PW + x3; hv[k3] = mask[k3] || (y3 > 0 && mask[k3 - PW]) || (y3 < PH - 1 && mask[k3 + PW]) ? 1 : 0; }
   var runMin = Math.round(PW * 0.22), kill = new Uint8Array(PW * PH);
-  for (var y4 = 0; y4 < PH; y4++) { var st = -1; for (var x4 = 0; x4 <= PW; x4++) { var on = x4 < PW && hv[y4 * PW + x4]; if (on && st < 0) st = x4; if (!on && st >= 0) { if (x4 - st >= runMin) for (var z = st; z < x4; z++) kill[y4 * PW + z] = 1; st = -1; } } }
-  var vMin = Math.round(ch * 0.75);
-  for (var x5 = 0; x5 < PW; x5++) { if (Math.abs(x5 - lft) > 8 && Math.abs(x5 - rgt) > 8) continue; var st2 = -1;
-    for (var y5 = 0; y5 <= PH; y5++) { var on2 = y5 < PH && (mask[y5 * PW + x5] || (x5 > 0 && mask[y5 * PW + x5 - 1]) || (x5 < PW - 1 && mask[y5 * PW + x5 + 1])); if (on2 && st2 < 0) st2 = y5; if (!on2 && st2 >= 0) { if (y5 - st2 >= vMin) for (var z2 = st2; z2 < y5; z2++) kill[z2 * PW + x5] = 1; st2 = -1; } } }
+  function onLine(x, y) { var f = (x - lft) / Math.max(1, rgt - lft), yt = tL + (tR - tL) * f, yb2 = bL + (bR - bL) * f; return Math.abs(y - yt) <= 2.5 || Math.abs(y - yb2) <= 2.5; }
+  for (var y4 = 0; y4 < PH; y4++) { var st = -1; for (var x4 = 0; x4 <= PW; x4++) { var on = x4 < PW && hv[y4 * PW + x4]; if (on && st < 0) st = x4; if (!on && st >= 0) { if (x4 - st >= runMin) for (var z = st; z < x4; z++) if (onLine(z, y4)) kill[y4 * PW + z] = 1; st = -1; } } }
+  // 칸 양옆 세로선: 찾은 선 근처(±10px)에서 칸 높이의 절반 이상 어두운 세로줄이면 지움(끊긴 선·살짝 기운 선도)
+  for (var x5 = 0; x5 < PW; x5++) { if (Math.abs(x5 - lft) > 10 && Math.abs(x5 - rgt) > 10) continue;
+    var cnt = 0; for (var y5 = top; y5 < bot; y5++) { var k5 = y5 * PW + x5; if (mask[k5] || (x5 > 0 && mask[k5 - 1]) || (x5 < PW - 1 && mask[k5 + 1])) cnt++; }
+    if (cnt > ch * 0.5) for (var z2 = Math.max(0, top - Math.round(ch * 0.15)); z2 < Math.min(PH, bot + Math.round(ch * 0.35)); z2++) { kill[z2 * PW + x5] = 1; if (x5 > 0) kill[z2 * PW + x5 - 1] = 1; if (x5 < PW - 1) kill[z2 * PW + x5 + 1] = 1; } }
   for (var y6 = 0; y6 < PH; y6++) for (var x6 = 0; x6 < PW; x6++) {
     var k6 = y6 * PW + x6, out = kill[k6] || y6 < ya || y6 >= yb || x6 <= lft + 1 || x6 >= rgt - 1;
     if (out) { ink[k6] = 0; mask[k6] = 0; }
   }
   var im = { ink: ink, mask: mask, blank: maxd < 40 || !mask.some(function (v) { return v; }) };
-  // 실제로 찾은 칸 선으로 화면에 그릴 네모(양 끝 높이를 따로 재서 기울기·휨 반영)
-  var seg = Math.round((rgt - lft) * 0.3);
-  function near(y0, xa2, xb2) { var b2 = y0, bv2 = -1; for (var y = Math.max(0, y0 - 5); y <= Math.min(PH - 1, y0 + 5); y++) { var v = rowF(y, xa2, xb2); if (v > bv2) { bv2 = v; b2 = y; } } return bv2 > 0.3 ? b2 : y0; }
-  var tL = near(top, lft + 3, lft + seg), tR = near(top, rgt - seg, rgt - 3), bL = near(bot, lft + 3, lft + seg), bR = near(bot, rgt - seg, rgt - 3);
   function T2(px, py) { return apply(H, X0 + (px + 0.5) / sx, Y0 + (py + 0.5) / sy); }
   var quad = [T2(lft, tL), T2(rgt, tR), T2(rgt, bR), T2(lft, bL)];
   var cw = rgt - lft - 2, chh = yb - ya, crop = new Uint8ClampedArray(Math.max(1, cw * chh));
@@ -936,10 +974,68 @@ function addBatch(name, photo, res){
     var item = { name: name, round: res.round, ok: r.ok, un: r.un, wr: r.wr, blob: blob, file: fn, url: url }; BR.push(item);
     var col = r.un ? '#c98a10' : r.wr.length ? '#d64545' : '#1d9e75';
     card.innerHTML = '<img src="' + url + '" style="width:100%;display:block"><div style="padding:8px 10px"><b style="font-size:18px;color:' + col + '">' + rname(res.round) + ' ' + r.ok + '/15</b>' + (r.un ? '<div style="font-size:13px;color:#c98a10">확인 필요 ' + r.un + '칸</div>' : '') + '</div>';
-    card.onclick = function(){ window.open(url, '_blank'); };
+    card.onclick = function(){ openViewer(BR.indexOf(item)); };
     $('bList').appendChild(card);
   }, 'image/jpeg', 0.88);
 }
+
+// ---------- 결과 사진 크게 보기(두 손가락으로 늘리기, 닫기, 이전/다음) ----------
+var V = { i: 0, s: 1, x: 0, y: 0, base: 1 };
+function vItems(){ return BR.filter(function(b){ return b.url; }); }
+function openViewer(idx){
+  var items = vItems(); var it = BR[idx]; var i = items.indexOf(it); if (i < 0) i = 0; if (!items.length) return;
+  V.i = i; $('viewer').classList.remove('hide'); document.body.style.overflow = 'hidden'; vShow();
+}
+function vShow(){
+  var items = vItems(), it = items[V.i], img = $('vimg');
+  $('vTitle').textContent = (V.i + 1) + ' / ' + items.length + '  ·  ' + rname(it.round) + ' ' + it.ok + '/15';
+  $('vPrev').disabled = V.i === 0; $('vNext').disabled = V.i === items.length - 1;
+  img.onload = vFit; img.src = it.url; if (img.complete) vFit();
+}
+function vFit(){
+  var box = $('vbox'), img = $('vimg'), W = box.clientWidth, H = box.clientHeight;
+  V.base = Math.min(W / img.naturalWidth, H / img.naturalHeight); V.s = 1;
+  V.x = (W - img.naturalWidth * V.base) / 2; V.y = (H - img.naturalHeight * V.base) / 2; vApply();
+}
+function vApply(){
+  var img = $('vimg'), box = $('vbox'), sc = V.base * V.s, w = img.naturalWidth * sc, h = img.naturalHeight * sc, W = box.clientWidth, H = box.clientHeight;
+  if (w <= W) V.x = (W - w) / 2; else V.x = Math.min(0, Math.max(W - w, V.x));
+  if (h <= H) V.y = (H - h) / 2; else V.y = Math.min(0, Math.max(H - h, V.y));
+  img.style.width = img.naturalWidth + 'px'; img.style.transform = 'translate(' + V.x + 'px,' + V.y + 'px) scale(' + sc + ')';
+}
+function vZoomAt(ns, cx, cy){
+  ns = Math.max(1, Math.min(6, ns)); var k = ns / V.s;
+  V.x = cx - (cx - V.x) * k; V.y = cy - (cy - V.y) * k; V.s = ns; vApply();
+}
+$('vClose').onclick = function(){ $('viewer').classList.add('hide'); document.body.style.overflow = ''; };
+$('vPrev').onclick = function(){ if (V.i > 0) { V.i--; vShow(); } };
+$('vNext').onclick = function(){ if (V.i < vItems().length - 1) { V.i++; vShow(); } };
+window.addEventListener('resize', function(){ if (!$('viewer').classList.contains('hide')) vFit(); });
+(function(){
+  var box = $('vbox'), t0 = null, lastTap = 0;
+  function pt(e, i){ var r = box.getBoundingClientRect(); return [e.touches[i].clientX - r.left, e.touches[i].clientY - r.top]; }
+  box.addEventListener('touchstart', function(e){
+    e.preventDefault();
+    if (e.touches.length === 2) { var a = pt(e, 0), b = pt(e, 1); t0 = { pinch: true, d: Math.hypot(a[0]-b[0], a[1]-b[1]), s: V.s, c: [(a[0]+b[0])/2, (a[1]+b[1])/2], x: V.x, y: V.y }; }
+    else if (e.touches.length === 1) { var p = pt(e, 0), now = Date.now();
+      if (now - lastTap < 300) { vZoomAt(V.s > 1.2 ? 1 : 2.5, p[0], p[1]); lastTap = 0; t0 = null; return; }
+      lastTap = now; t0 = { pinch: false, p: p, x: V.x, y: V.y, moved: 0 }; }
+  }, { passive: false });
+  box.addEventListener('touchmove', function(e){
+    e.preventDefault(); if (!t0) return;
+    if (t0.pinch && e.touches.length === 2) { var a = pt(e, 0), b = pt(e, 1), d = Math.hypot(a[0]-b[0], a[1]-b[1]), c = [(a[0]+b[0])/2, (a[1]+b[1])/2];
+      var ns = Math.max(1, Math.min(6, t0.s * d / t0.d)), k = ns / t0.s;
+      V.s = ns; V.x = c[0] - (t0.c[0] - t0.x) * k; V.y = c[1] - (t0.c[1] - t0.y) * k; vApply(); }
+    else if (!t0.pinch && e.touches.length === 1) { var p = pt(e, 0), dx = p[0] - t0.p[0], dy = p[1] - t0.p[1]; t0.moved = Math.max(t0.moved, Math.abs(dx));
+      t0.dx = dx; if (V.s > 1.01) { V.x = t0.x + dx; V.y = t0.y + dy; vApply(); } }
+  }, { passive: false });
+  box.addEventListener('touchend', function(e){
+    if (t0 && !t0.pinch && V.s <= 1.01 && Math.abs(t0.dx || 0) > 60) { if (t0.dx < 0) $('vNext').onclick(); else $('vPrev').onclick(); }
+    if (e.touches.length === 0) t0 = null;
+  });
+  box.addEventListener('wheel', function(e){ e.preventDefault(); var r = box.getBoundingClientRect(); vZoomAt(V.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  box.addEventListener('dblclick', function(e){ var r = box.getBoundingClientRect(); vZoomAt(V.s > 1.2 ? 1 : 2.5, e.clientX - r.left, e.clientY - r.top); });
+})();
 $('bShare').onclick = function(){
   var items = BR.filter(function(b){ return b.blob; }); if (!items.length) return;
   var files = items.map(function(b){ return new File([b.blob], b.file, { type: 'image/jpeg' }); });
@@ -996,7 +1092,7 @@ $('copyBtn').onclick = function(){
   try { navigator.clipboard.writeText(t).then(done, function(){ note('복사가 막혀 있어요.'); }); } catch(e) { note('복사가 막혀 있어요.'); }
 };
 function note(t){ var n = $('note'); n.textContent = t; n.classList.remove('hide'); clearTimeout(note.t); note.t = setTimeout(function(){ n.classList.add('hide'); }, 4000); }
-if (window.G12_ARTIFACT) { $('sCam').classList.add('hide'); $('bShare').textContent = '결과 사진 크게 보기(길게 눌러 저장)'; $('bShare').onclick = function(){ var f = BR.filter(function(b){ return b.url; })[0]; if (f) window.open(f.url, '_blank'); }; $('liveBtn').classList.add('hide'); $('csvBtn').classList.add('hide'); $('imgBtn').classList.add('hide'); $('photoBtn').textContent = '사진 찍기 · 고르기'; $('photoBtn').classList.add('main'); }
+if (window.G12_ARTIFACT) { $('sCam').classList.add('hide'); $('bShare').textContent = '결과 사진 크게 보기'; $('bShare').onclick = function(){ if (vItems().length) openViewer(BR.indexOf(vItems()[0])); }; $('liveBtn').classList.add('hide'); $('csvBtn').classList.add('hide'); $('imgBtn').classList.add('hide'); $('photoBtn').textContent = '사진 찍기 · 고르기'; $('photoBtn').classList.add('main'); }
 renderLog(); chip();
 })();
 </script>
