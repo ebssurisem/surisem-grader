@@ -28,6 +28,12 @@ button:disabled{opacity:.4}
 #camView .cmid{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
 #frame{position:relative}
 #frame video,#frame canvas{position:absolute;inset:0;width:100%;height:100%}
+#shotOv{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#fff;text-align:center;padding:20px;transition:background .25s;pointer-events:auto;z-index:3}
+#shotOv.done{background:rgba(22,163,74,.88)}
+#shotOv.wait{background:rgba(15,23,42,.62);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+#shotOv .big{font-size:30px;font-weight:800;line-height:1.25}
+#shotOv .sm{font-size:16px;opacity:.95;line-height:1.4}
+#shotOv .cnt{font-size:56px;font-weight:900;line-height:1}
 #camMsg{color:#fff;text-align:center;font-size:16px;padding:6px 10px;min-height:28px}
 #camView .cbot{display:flex;align-items:center;justify-content:center;padding:6px 0 calc(env(safe-area-inset-bottom) + 14px)}
 #shutter{width:84px;height:84px;border-radius:50%;background:#fff;border:6px solid #7a5c50;box-shadow:0 0 0 4px #fff;font-size:17px;font-weight:800;color:#7a5c50;padding:0}
@@ -107,7 +113,7 @@ input[type=text]{font:inherit;font-size:16px;padding:10px;border-radius:10px;bor
   </div>
   <div id="camView" class="hide">
     <div class="ctop"><button id="camRound" class="main">1회 ▾</button><button id="autoShot">자동 촬영 켜짐</button><span style="flex:1"></span><button id="multiDone" class="main hide">다 찍었어요 (0)</button><button id="camClose">닫기</button></div>
-    <div class="cmid" id="cmid"><div id="frame"><video id="vid" playsinline muted></video><canvas id="ovL"></canvas></div></div>
+    <div class="cmid" id="cmid"><div id="frame"><video id="vid" playsinline muted></video><canvas id="ovL"></canvas><div id="shotOv" class="hide"></div></div></div>
     <div id="camMsg">교재 한 쪽이 화면에 다 들어오게 비춰 주세요</div>
     <div class="cbot"><button id="shutter" disabled>채점</button></div>
   </div>
@@ -1177,7 +1183,7 @@ window.addEventListener('resize', fitFrame);
 function openCam(){
   state.frozen = false; state.cells = null; state.liveCells = null;
   $('camView').classList.remove('hide'); document.body.style.overflow = 'hidden';
-  $('camRound').textContent = label() + ' ▾'; AUTO.hist = []; AUTO.since = Date.now(); AUTO.needMove = null;
+  $('camRound').textContent = label() + ' ▾'; AUTO.hist = []; AUTO.since = Date.now(); AUTO.needMove = null; AUTO.doneAt = 0; if ($('shotOv')) $('shotOv').className = 'hide';
   $('shutter').textContent = state.multi ? '찍기' : '채점'; $('multiDone').classList.toggle('hide', !state.multi);
   $('shutter').disabled = true; camMsg('교재 한 쪽이 화면에 다 들어오게 비춰 주세요'); drawOverlay(1, 1, ovL, null); fitFrame();
 }
@@ -1215,6 +1221,7 @@ try { AUTO.on = localStorage.getItem('g12auto') !== '0'; } catch(e) {}
 function autoLabel(){ $('autoShot').textContent = AUTO.on ? '자동 촬영 켜짐' : '자동 촬영 꺼짐'; $('autoShot').style.opacity = AUTO.on ? 1 : 0.6; }
 $('autoShot').onclick = function(){ AUTO.on = !AUTO.on; try { localStorage.setItem('g12auto', AUTO.on ? '1' : '0'); } catch(e) {} autoLabel(); AUTO.hist = []; };
 autoLabel();
+document.addEventListener('click', function(ev){ if (ev.target && ev.target.closest && ev.target.closest('#shotOv')) { AUTO.needMove = null; AUTO.doneAt = 0; AUTO.since = Date.now(); AUTO.hist = []; shotUI(); camMsg('같은 쪽을 다시 찍을게요 · 그대로 들고 계세요'); } });
 function autoCheck(res, w){
   var q = res.cells[0].quad, r = res.cells[res.cells.length - 1].quad, pos = [q[0][0], q[0][1], r[2][0], r[2][1]];
   var now = Date.now(); AUTO.hist.push({ t: now, s: res.sharp, p: pos }); AUTO.hist = AUTO.hist.filter(function(h){ return now - h.t < 6000; }).slice(-8); // 휴대폰이 느려도(한 장 1초 넘게) 모이도록
@@ -1222,11 +1229,11 @@ function autoCheck(res, w){
   var n = AUTO.hist.length, best = Math.max.apply(null, AUTO.hist.map(function(h){ return h.s; }));
   var still = n >= 3 && AUTO.hist.slice(-3).every(function(h, i, arr){ if (!i) return true; var a = arr[i - 1].p; return Math.abs(h.p[0]-a[0]) + Math.abs(h.p[1]-a[1]) + Math.abs(h.p[2]-a[2]) + Math.abs(h.p[3]-a[3]) < w * 0.025; });
   var sharpNow = res.sharp >= best * 0.85 && res.sharp > 20;
-  if (now - AUTO.since < 1200) { camMsg(rname(res.round) + ' 정답 · 그대로 들고 계세요'); return; }
   if (state.multi && AUTO.needMove) { // 같은 쪽을 또 찍지 않도록, 책이 넘어가거나 움직일 때까지 기다림
     var m = AUTO.needMove, d = Math.abs(pos[0]-m[0]) + Math.abs(pos[1]-m[1]) + Math.abs(pos[2]-m[2]) + Math.abs(pos[3]-m[3]);
     if (d > w * 0.15 || String(res.round) !== AUTO.lastRound) AUTO.needMove = null; else { camMsg((STG.length) + '장 찍음 · 다음 쪽으로 넘겨 주세요'); AUTO.lastRound = String(res.round); return; }
   }
+  if (now - AUTO.since < 1200) { camMsg(rname(res.round) + ' 정답 · 그대로 들고 계세요'); return; }
   AUTO.lastRound = String(res.round);
   if (still && sharpNow) { if (state.multi) { camMsg('찰칵!'); captureToStage(); } else { camMsg('찰칵! 채점할게요'); snapGrade(); } return; }
   camMsg(rname(res.round) + ' 정답 · ' + (!still ? '움직이지 말고 그대로…' : '초점 맞추는 중…'));
@@ -1313,9 +1320,18 @@ function captureToStage(){
   stgAdd(c, '카메라 ' + (STG.length + 1));
   if (navigator.vibrate) navigator.vibrate(40);
   var f = $('frame'); f.style.opacity = 0.3; setTimeout(function(){ f.style.opacity = 1; }, 150);
-  AUTO.needMove = AUTO.hist.length ? AUTO.hist[AUTO.hist.length - 1].p : null; AUTO.since = Date.now();
-  camMsg((STG.length + 1) + '장 찍음 · 다음 쪽으로 넘겨 주세요');
+  AUTO.needMove = AUTO.hist.length ? AUTO.hist[AUTO.hist.length - 1].p : null; AUTO.since = Date.now(); AUTO.doneAt = Date.now(); AUTO.shotN = STG.length + 1;
+  camMsg(AUTO.shotN + '장 찍음 · 다음 쪽으로 넘겨 주세요'); shotUI();
 }
+// 여러 장 찍기: 찍힌 순간 초록 화면(✓ N장째), 그다음엔 다음 쪽으로 넘길 때까지 화면을 흐리게
+function shotUI(){
+  var o = $('shotOv'); if (!o) return;
+  if (!state.multi || !AUTO.doneAt || !AUTO.needMove && Date.now() - AUTO.doneAt > 1200) { if (!o.classList.contains('hide')) { o.className = 'hide'; o.innerHTML = ''; if (state.multi && AUTO.doneAt) camMsg('새 쪽을 비추는 중…'); } AUTO.doneAt = AUTO.needMove ? AUTO.doneAt : 0; return; }
+  var n = AUTO.shotN || STG.length;
+  if (Date.now() - AUTO.doneAt < 1200) { if (o.className !== 'done') { o.className = 'done'; o.innerHTML = '<div class="cnt">✓</div><div class="big">' + n + '장째 찍었어요</div><div class="sm">잘 찍혔어요</div>'; } }
+  else if (o.className !== 'wait') { o.className = 'wait'; o.innerHTML = '<div class="big">📖 다음 쪽으로<br>넘겨 주세요</div><div class="sm">지금까지 <b>' + n + '장</b> 찍었어요<br>다 찍었으면 위의 <b>완료</b>를 눌러 주세요</div><div class="sm" style="opacity:.75;font-size:14px">같은 쪽을 다시 찍으려면 화면을 눌러 주세요</div>'; }
+}
+setInterval(function(){ if (state.live) shotUI(); }, 250);
 $('sGo').onclick = function(){
   var list = STG.slice(); if (!list.length) return;
   BR = []; $('bList').innerHTML = ''; $('bRes').classList.remove('hide');
