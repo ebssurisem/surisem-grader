@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>주산 카메라 채점</title>
+<title>수리스코어</title>
 <style>
 :root{--brown:#7a5c50;--bg:#f6f2ee;--ink:#2b2320;--muted:#7d706a;--ok:#1d9e75;--no:#d64545;--un:#e0a020;}
 *{box-sizing:border-box}
@@ -68,7 +68,7 @@ input[type=text]{font:inherit;font-size:16px;padding:10px;border-radius:10px;bor
 </style>
 </head>
 <body>
-<header><h1 id="hTitle">주산 카메라 채점</h1><small id="ver">시험판</small></header>
+<header><h1 id="hTitle">수리스코어</h1><small id="ver">시험판</small></header>
 <main>
   <div class="bar">
     <button id="rLab" class="main" style="font-size:20px;padding:12px 18px">1회 ▾</button>
@@ -725,7 +725,7 @@ function buildRounds(){
 function setBook(b){
   if (!BOOKS[b]) return; state.book = b; try { localStorage.setItem('g12book', b); } catch(e) {}
   Array.prototype.forEach.call(document.querySelectorAll('#gridB button'), function(x){ x.classList.toggle('on', x.dataset.b === b); });
-  buildRounds(); setRound(state.round); $('hTitle').textContent = '주산 카메라 채점';
+  buildRounds(); setRound(state.round); $('hTitle').textContent = '수리스코어';
 }
 BOOKKEYS.forEach(function(bk){ var b = document.createElement('button'); b.dataset.b = bk; b.textContent = BOOKS[bk].name.replace('주산 ', ''); b.onclick = function(){ setBook(bk); state.auto = true; chip(); }; $('gridB').appendChild(b); });
 $('rLab').onclick = function(){ grid.classList.toggle('hide'); };
